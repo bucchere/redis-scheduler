@@ -122,14 +122,13 @@ class RedisScheduler
     end
   end
 
-  # not synchronized with add/remove operations
   def unschedule_for!(user_id)
-    return unless user_id
-    jobs = @redis.hget(@user_jobs, user_id.to_s)
     rval = []
+    return rval unless user_id
+    jobs = @redis.hget(@user_jobs, user_id.to_s)
     if jobs
       jobs.split(',').each do |job_id|
-	rval << @redis.hget(@jobs, job_id)
+	rval << { job_id => @redis.hget(@jobs, job_id) }
         @redis.zrem(@queue, job_id)
       end
     end
@@ -137,17 +136,41 @@ class RedisScheduler
     rval
   end
 
-  # not synchronized with add/remove operations
-  def jobs_for(user_id)
-    return unless user_id
-    jobs = @redis.hget(@user_jobs, user_id.to_s)
+  def scheduled_for(user_id)
     rval = []
+    return rval unless user_id
+    jobs = @redis.hget(@user_jobs, user_id.to_s)
     if jobs
       jobs.split(',').each do |job_id|
 	rval << { job_id => @redis.hget(@jobs, job_id) }
       end
     end
     rval
+  end
+
+  def unschedule!(user_id, id)
+    remaining_job_ids = []
+    rval = {}
+    return rval unless user_id and id
+    jobs = @redis.hget(@user_jobs, user_id.to_s)
+    if jobs
+      @redis.hdel(@user_jobs, user_id.to_s)
+      jobs.split(',').each do |job_id|
+	if job_id.to_s == id.to_s
+	  rval = { job_id => @redis.hget(@jobs, job_id) }
+          @redis.zrem(@queue, job_id)
+	else
+	  remaining_job_ids << job_id
+	end
+      end
+      @redis.hset(@user_jobs, user_id.to_s, remaining_job_ids.join(','))
+    end
+    rval
+  end
+
+  def item(job_id)
+    return nil unless job_id
+    { job_id => @redis.hget(@jobs, job_id) }
   end
 
   private
