@@ -42,23 +42,23 @@ class RedisScheduler
     @processing_set = [@namespace, "processing"].join
     @counter = [@namespace, "counter"].join
     @jobs = [@namespace, "jobs"].join #hash mapping job_id => payload
-    @user_jobs = [@namespace, "user_jobs"].join #list of jobs for each user
+    @user_jobs = [@namespace, "user_jobs"].join #hash mapping user_id => job_id1,job_id2,job_id3....
   end
 
   ## Schedule an item at a specific time. item will be converted to a string.
   def schedule!(item, time, user_id = nil)
     id = @redis.incr @counter
     @redis.zadd @queue, time.to_f, "#{id}"
-    @redis.hset @jobs, id, item
-    if user_id
+    @redis.hset @jobs, id, item #move item (payload) out of the queue and into a hash
+
+    if user_id #optionally create or add to a per-user list of jobs
       jobs = @redis.hget(@user_jobs, user_id.to_s)
       if jobs
-	jobs_array = jobs.split(',')
+	jobs += ",#{id}"
       else
-	jobs_array = []
+	jobs = "#{id}"
       end
-      jobs_array << id
-      @redis.hset(@user_jobs, user_id.to_s, jobs_array.join(','))
+      @redis.hset(@user_jobs, user_id.to_s, jobs)
     end
   end
 
@@ -124,12 +124,15 @@ class RedisScheduler
   def unschedule_for!(user_id)
     return unless user_id
     jobs = @redis.hget(@user_jobs, user_id.to_s)
+    rval = []
     if jobs
       jobs.split(',').each do |job_id|
+	rval << @redis.hget(@jobs, job_id)
         @redis.zrem(@queue, job_id)
       end
     end
     @redis.hdel(@user_jobs, user_id.to_s)
+    rval
   end
 
   private
