@@ -37,4 +37,13 @@ describe RedisScheduler do
     @scheduler.unschedule_for!(1).should == ['testing1']
     @scheduler.size.should == 1
   end
+
+  it "should return an array of job_id => payload hashes for a given user" do
+    id1 = @scheduler.schedule!("testing1", Time.now.to_i, 1)
+    id2 = @scheduler.schedule!("testing2", Time.now.to_i, 1)
+    id3 = @scheduler.schedule!("testing3", Time.now.to_i, 2)
+    @scheduler.size.should == 3
+    @scheduler.jobs_for(1).should == [{ id1.to_s => 'testing1' }, { id2.to_s => 'testing2' }]
+    @scheduler.size.should == 3
+  end
 end

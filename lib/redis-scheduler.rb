@@ -60,6 +60,7 @@ class RedisScheduler
       end
       @redis.hset(@user_jobs, user_id.to_s, jobs)
     end
+    id
   end
 
   ## Drop all data and reset the schedule entirely.
@@ -121,6 +122,7 @@ class RedisScheduler
     end
   end
 
+  # not synchronized with add/remove operations
   def unschedule_for!(user_id)
     return unless user_id
     jobs = @redis.hget(@user_jobs, user_id.to_s)
@@ -132,6 +134,19 @@ class RedisScheduler
       end
     end
     @redis.hdel(@user_jobs, user_id.to_s)
+    rval
+  end
+
+  # not synchronized with add/remove operations
+  def jobs_for(user_id)
+    return unless user_id
+    jobs = @redis.hget(@user_jobs, user_id.to_s)
+    rval = []
+    if jobs
+      jobs.split(',').each do |job_id|
+	rval << { job_id => @redis.hget(@jobs, job_id) }
+      end
+    end
     rval
   end
 
