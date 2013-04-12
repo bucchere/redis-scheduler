@@ -22,11 +22,19 @@ describe RedisScheduler do
     @scheduler.size.should == 0
   end
 
-  it "should allow unscheudling" do
+  it "should allow unscheudling by user" do
     @scheduler.schedule!("testing1", Time.now.to_i, 1)
     @scheduler.schedule!("testing2", Time.now.to_i, 1)
     @scheduler.size.should == 2
-    @scheduler.unschedule_for!(1)
+    @scheduler.unschedule_for!(1).should == ['testing1', 'testing2']
     @scheduler.size.should == 0
+  end
+
+  it "should not do too much unscheduling" do
+    @scheduler.schedule!("testing1", Time.now.to_i, 1)
+    @scheduler.schedule!("testing2", Time.now.to_i, 2)
+    @scheduler.size.should == 2
+    @scheduler.unschedule_for!(1).should == ['testing1']
+    @scheduler.size.should == 1
   end
 end
