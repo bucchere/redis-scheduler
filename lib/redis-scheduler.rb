@@ -41,17 +41,30 @@ class RedisScheduler
     @queue = [@namespace, "q"].join
     @processing_set = [@namespace, "processing"].join
     @counter = [@namespace, "counter"].join
+    @jobs = [@namespace, "jobs"].join #hash mapping job_id => payload
+    @user_jobs = [@namespace, "user_jobs"].join #list of jobs for each user
   end
 
   ## Schedule an item at a specific time. item will be converted to a string.
-  def schedule! item, time
+  def schedule!(item, time, user_id = nil)
     id = @redis.incr @counter
-    @redis.zadd @queue, time.to_f, "#{id}:#{item}"
+    @redis.zadd @queue, time.to_f, "#{id}"
+    @redis.hset @jobs, id, item
+    if user_id
+      jobs = @redis.hget(@user_jobs, user_id.to_s)
+      if jobs
+	jobs_array = jobs.split(',')
+      else
+	jobs_array = []
+      end
+      jobs_array << id
+      @redis.hset(@user_jobs, user_id.to_s, jobs_array.join(','))
+    end
   end
 
   ## Drop all data and reset the schedule entirely.
   def reset!
-    [@queue, @processing_set, @counter].each { |k| @redis.del k }
+    [@queue, @processing_set, @counter, @jobs, @user_jobs].each { |k| @redis.del k }
   end
 
   ## Return the total number of items in the schedule.
@@ -72,11 +85,14 @@ class RedisScheduler
   ## when iterating through the processing set.
   def each descriptor=nil
     while(x = get(descriptor))
-      item, processing_descriptor, at = x
+      job_id, at, processing_descriptor = x
+      item = @redis.hget @jobs, job_id.to_s
+      @redis.hdel @jobs, job_id
       begin
         yield item, at
       rescue Exception # back in the hole!
         schedule! item, at
+        @redis.hset @jobs, job_id, item
         raise
       ensure
         cleanup! processing_descriptor
@@ -100,12 +116,23 @@ class RedisScheduler
   ## the item was removed from the schedule for processing.
   def processing_set_items
     @redis.smembers(@processing_set).map do |x|
-      item, timestamp, descriptor = Marshal.load(x)
-      [item, Time.at(timestamp), descriptor]
+      job_id, timestamp, descriptor = Marshal.load(x)
+      [job_id, Time.at(timestamp), descriptor]
     end
   end
 
-private
+  def unschedule_for!(user_id)
+    return unless user_id
+    jobs = @redis.hget(@user_jobs, user_id.to_s)
+    if jobs
+      jobs.split(',').each do |job_id|
+        @redis.zrem(@queue, job_id)
+      end
+    end
+    @redis.hdel(@user_jobs, user_id.to_s)
+  end
+
+  private
 
   def get descriptor; @blocking ? blocking_get(descriptor) : nonblocking_get(descriptor) end
 
@@ -119,18 +146,17 @@ private
   ## happen, unless you are naughty and are adding/removing items from that
   ## zset yourself.
   class InvalidEntryException < StandardError; end
+
   def nonblocking_get descriptor
     loop do
       @redis.watch @queue
-      entry, at = @redis.zrangebyscore @queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1]
-      break unless entry
-      entry =~ /^\d+:(\S+)$/ or raise InvalidEntryException, entry
-      item = $1
-      descriptor = Marshal.dump [item, Time.now.to_i, descriptor]
+      rval, at = @redis.zrangebyscore @queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1]
+      break unless rval
+      descriptor = Marshal.dump [rval[0], Time.now.to_f, descriptor]
       @redis.multi do # try and grab it
-        @redis.zrem @queue, entry
+        @redis.zrem @queue, rval[0]
         @redis.sadd @processing_set, descriptor
-      end and break [item, descriptor, Time.at(at.to_f)]
+      end and break [rval[0], Time.at(rval[1].to_f), descriptor]
       sleep CAS_DELAY # transaction failed. retry!
     end
   end
@@ -164,10 +190,8 @@ private
 
     def [] start, num=nil
       elements = @redis.zrange @q, start, start + (num || 0) - 1, :withscores => true
-      v = elements.each_slice(2).map do |item, at|
-        item =~ /^\d+:(\S+)$/ or raise InvalidEntryException, item
-        item = $1
-        [item, Time.at(at.to_f)]
+      v = elements.each_slice(2).map do |job_id, at|
+        [@redis.hget(@jobs, job_id.to_s), Time.at(at.to_f)]
       end
       num ? v : v.first
     end
