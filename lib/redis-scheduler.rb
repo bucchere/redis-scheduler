@@ -128,7 +128,7 @@ class RedisScheduler
     jobs = @redis.hget(@user_jobs, user_id.to_s)
     if jobs
       jobs.split(',').each do |job_id|
-	rval << { job_id => @redis.hget(@jobs, job_id) }
+        rval << { job_id => @redis.hget(@jobs, job_id) }
         @redis.zrem(@queue, job_id)
       end
     end
@@ -142,7 +142,8 @@ class RedisScheduler
     jobs = @redis.hget(@user_jobs, user_id.to_s)
     if jobs
       jobs.split(',').each do |job_id|
-	rval << { job_id => @redis.hget(@jobs, job_id) }
+        next if job_id == ""
+        rval << { job_id => @redis.hget(@jobs, job_id) }
       end
     end
     rval
@@ -156,14 +157,17 @@ class RedisScheduler
     if jobs
       @redis.hdel(@user_jobs, user_id.to_s)
       jobs.split(',').each do |job_id|
-	if job_id.to_s == id.to_s
-	  rval = { job_id => @redis.hget(@jobs, job_id) }
+        if job_id.to_s == id.to_s
+          rval = { job_id => @redis.hget(@jobs, job_id) }
           @redis.zrem(@queue, job_id)
-	else
-	  remaining_job_ids << job_id
-	end
+          @redis.hdel(@jobs, job_id)
+        else
+          remaining_job_ids << job_id
+        end
       end
-      @redis.hset(@user_jobs, user_id.to_s, remaining_job_ids.join(','))
+      if remaining_job_ids.length
+        @redis.hset(@user_jobs, user_id.to_s, remaining_job_ids.join(','))
+      end
     end
     rval
   end
