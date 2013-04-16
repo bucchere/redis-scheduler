@@ -11,7 +11,7 @@ describe RedisScheduler do
     @scheduler.should_not == nil
     @id1 = @scheduler.schedule!("testing1", Time.now.to_i, 1)
     @id2 = @scheduler.schedule!("testing2", Time.now.to_i, 1)
-    @id3 = @scheduler.schedule!('{ "testing" : 3 }', Time.now.to_i, 2)
+    @id3 = @scheduler.schedule!(URI::encode('{ "testing" : 3 }'), Time.now.to_i, 2)
     @scheduler.size.should == 3
   end
 

@@ -1,3 +1,4 @@
+require 'logger'
 ## A basic chronological scheduler for Redis.
 ##
 ## Use #schedule! to add an item to be processed at an arbitrary point in time.
@@ -37,6 +38,7 @@ class RedisScheduler
     @redis = redis
     @namespace = opts[:namespace]
     @blocking = opts[:blocking]
+    @logger = opts[:logger] || Logger.new(STDOUT)
 
     @queue = [@namespace, "q"].join
     @processing_set = [@namespace, "processing"].join
@@ -86,6 +88,7 @@ class RedisScheduler
   ## when iterating through the processing set.
   def each descriptor=nil
     while(x = get(descriptor))
+      @logger.debug "x = #{x}"
       job_id, at, processing_descriptor = x
       item = @redis.hget @jobs, job_id.to_s
       @redis.hdel @jobs, job_id
@@ -126,6 +129,7 @@ class RedisScheduler
     rval = []
     return rval unless user_id
     jobs = @redis.hget(@user_jobs, user_id.to_s)
+    @logger.debug(jobs)
     if jobs
       jobs.split(',').each do |job_id|
         rval << { job_id => @redis.hget(@jobs, job_id) }
@@ -195,13 +199,16 @@ class RedisScheduler
   def nonblocking_get descriptor
     loop do
       @redis.watch @queue
-      rval, at = @redis.zrangebyscore @queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1]
-      break unless rval
-      descriptor = Marshal.dump [rval[0], Time.now.to_f, descriptor]
+      job_id_and_time, at = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
+      break unless job_id_and_time
+      @logger.debug "job_id_and_time = #{job_id_and_time}"
+      @logger.debug "job_id = #{job_id_and_time[0]}"
+      @logger.debug "at = #{job_id_and_time[1]}"
+      descriptor = Marshal.dump [job_id_and_time[0], Time.now.to_f, descriptor]
       @redis.multi do # try and grab it
-        @redis.zrem @queue, rval[0]
+        @redis.zrem @queue, job_id_and_time[0]
         @redis.sadd @processing_set, descriptor
-      end and break [rval[0], Time.at(rval[1].to_f), descriptor]
+      end and break [job_id_and_time[0], Time.at(job_id_and_time[1].to_f), descriptor]
       sleep CAS_DELAY # transaction failed. retry!
     end
   end
