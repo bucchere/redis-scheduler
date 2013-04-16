@@ -11,7 +11,7 @@ describe RedisScheduler do
     @scheduler.should_not == nil
     @id1 = @scheduler.schedule!("testing1", Time.now.to_i, 1)
     @id2 = @scheduler.schedule!("testing2", Time.now.to_i, 1)
-    @id3 = @scheduler.schedule!(URI::encode('{ "testing" : 3 }'), Time.now.to_i, 2)
+    @id3 = @scheduler.schedule!(URI::encode({ "testing" => 3 }.to_json), Time.now.to_i, 2)
     @scheduler.size.should == 3
   end
 
@@ -38,7 +38,7 @@ describe RedisScheduler do
   it "should iterate over items ready to be executed" do
     @scheduler.each do |entry, time|
       if entry != 'testing1' and entry != 'testing2'
-        JSON.parse(URI::decode(entry))['testing'].should == 3
+        JSON::parse(URI::decode(entry))["testing"].should == 3
       end
     end
   end
