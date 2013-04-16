@@ -50,18 +50,9 @@ class RedisScheduler
   ## Schedule an item at a specific time. item will be converted to a string.
   def schedule!(item, time, user_id = nil)
     id = @redis.incr @counter
-    @redis.zadd @queue, time.to_f, "#{id}"
-    @redis.hset @jobs, id, item #move item (payload) out of the queue and into a hash
-
-    if user_id #optionally create or add to a per-user list of jobs
-      jobs = @redis.hget(@user_jobs, user_id.to_s)
-      if jobs
-	jobs += ",#{id}"
-      else
-	jobs = "#{id}"
-      end
-      @redis.hset(@user_jobs, user_id.to_s, jobs)
-    end
+    @redis.zadd @queue, time.to_f, user_id ? "#{id}:#{user_id}" : "#{id}"
+    @redis.hset @jobs, id, item
+    add_job_for(user_id, id)
     id
   end
 
@@ -88,15 +79,17 @@ class RedisScheduler
   ## when iterating through the processing set.
   def each descriptor=nil
     while(x = get(descriptor))
-      @logger.debug "x = #{x}"
-      job_id, at, processing_descriptor = x
+      ids, at, processing_descriptor = x
+      job_id, user_id = ids.split(':')
       item = @redis.hget @jobs, job_id.to_s
       @redis.hdel @jobs, job_id
+      remove_job_for(user_id, job_id) if user_id
       begin
         yield item, at
       rescue Exception # back in the hole!
         schedule! item, at
-        @redis.hset @jobs, job_id, item
+        @redis.hset @jobs, job_id.to_s, item
+        add_job_for(user_id, job_id) if user_id
         raise
       ensure
         cleanup! processing_descriptor
@@ -125,16 +118,14 @@ class RedisScheduler
     end
   end
 
+  #unschedules all jobs for a given user
   def unschedule_for!(user_id)
     rval = []
     return rval unless user_id
-    jobs = @redis.hget(@user_jobs, user_id.to_s)
-    @logger.debug(jobs)
-    if jobs
-      jobs.split(',').each do |job_id|
-        rval << { job_id => @redis.hget(@jobs, job_id) }
-        @redis.zrem(@queue, job_id)
-      end
+    @logger.debug(jobs_for(user_id))
+    jobs_for(user_id).each do |job_id|
+      rval << { job_id.to_s => @redis.hget(@jobs, job_id) }
+      @redis.zrem(@queue, "#{job_id}:#{user_id}")
     end
     @redis.hdel(@user_jobs, user_id.to_s)
     rval
@@ -143,12 +134,9 @@ class RedisScheduler
   def scheduled_for(user_id)
     rval = []
     return rval unless user_id
-    jobs = @redis.hget(@user_jobs, user_id.to_s)
-    if jobs
-      jobs.split(',').each do |job_id|
-        next if job_id == ""
-        rval << { job_id => @redis.hget(@jobs, job_id) }
-      end
+    jobs_for(user_id).each do |job_id|
+      next unless job_id
+      rval << { job_id.to_s => @redis.hget(@jobs, job_id) }
     end
     rval
   end
@@ -157,20 +145,13 @@ class RedisScheduler
     remaining_job_ids = []
     rval = {}
     return rval unless user_id and id
-    jobs = @redis.hget(@user_jobs, user_id.to_s)
-    if jobs
-      @redis.hdel(@user_jobs, user_id.to_s)
-      jobs.split(',').each do |job_id|
-        if job_id.to_s == id.to_s
-          rval = { job_id => @redis.hget(@jobs, job_id) }
-          @redis.zrem(@queue, job_id)
-          @redis.hdel(@jobs, job_id)
-        else
-          remaining_job_ids << job_id
-        end
-      end
-      if remaining_job_ids.length
-        @redis.hset(@user_jobs, user_id.to_s, remaining_job_ids.join(','))
+    jobs_for(user_id).each do |job_id|
+      if job_id == id
+	rval = { job_id.to_s => @redis.hget(@jobs, job_id) }
+	@redis.zrem(@queue, "#{job_id}:#{user_id}")
+	@redis.hdel(@jobs, job_id)
+	remove_job_for(user_id, job_id)
+	break
       end
     end
     rval
@@ -178,7 +159,7 @@ class RedisScheduler
 
   def item(job_id)
     return nil unless job_id
-    { job_id => @redis.hget(@jobs, job_id) }
+    { job_id => @redis.hget(@jobs, job_id.to_s) }
   end
 
   private
@@ -199,22 +180,66 @@ class RedisScheduler
   def nonblocking_get descriptor
     loop do
       @redis.watch @queue
-      job_id_and_time, at = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
-      break unless job_id_and_time
-      @logger.debug "job_id_and_time = #{job_id_and_time}"
-      @logger.debug "job_id = #{job_id_and_time[0]}"
-      @logger.debug "at = #{job_id_and_time[1]}"
-      descriptor = Marshal.dump [job_id_and_time[0], Time.now.to_f, descriptor]
+      ids_and_time = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])[0]
+      break unless ids_and_time
+      job_id, user_id = ids_and_time[0].split(':')
+      runtime = ids_and_time[1]
+
+      @logger.debug "ids_and_time = #{ids_and_time}"
+      @logger.debug "job_id = #{job_id}"
+      @logger.debug "user_id = #{user_id}"
+      @logger.debug "runtime = #{runtime}"
+
+      descriptor = Marshal.dump [job_id, Time.now.to_f, descriptor]
+
+      jobs_raw = @redis.hget(@user_jobs, user_id)
+      jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
+      jobs.each do |job|
+	if job == job_id
+	  jobs -= [job]
+	  break
+	end
+      end
+
       @redis.multi do # try and grab it
-        @redis.zrem @queue, job_id_and_time[0]
+        @redis.zrem @queue, ids_and_time[0]
         @redis.sadd @processing_set, descriptor
-      end and break [job_id_and_time[0], Time.at(job_id_and_time[1].to_f), descriptor]
+        @redis.hset(@user_jobs, user_id, URI::encode(jobs.to_json))
+      end and break [job_id, Time.at(runtime.to_f), descriptor]
       sleep CAS_DELAY # transaction failed. retry!
     end
   end
 
   def cleanup! item
     @redis.srem @processing_set, item
+  end
+
+  def jobs_for(user_id)
+    return [] unless user_id
+    jobs = @redis.hget(@user_jobs, user_id)
+    jobs ? JSON::parse(URI::decode(jobs)) : []
+  end
+
+  def add_job_for(user_id, job_id)
+    return unless user_id and job_id
+    jobs_raw = @redis.hget(@user_jobs, user_id)
+    jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
+    jobs << job_id
+    @redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
+  end
+
+  #O(n) where n is the number of jobs for a given user
+  def remove_job_for(user_id, job_id)
+    return unless user_id and job_id
+    jobs_raw = @redis.hget(@user_jobs, user_id)
+    jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
+    jobs.each do |job|
+      if job == job_id
+	jobs -= [job]
+	break
+      end
+    end
+    @redis.hset(@user_jobs, user_id, URI::encode(jobs.to_json))
   end
 
   ## Enumerable class for iterating over everything in the schedule. Paginates
@@ -250,5 +275,4 @@ class RedisScheduler
 
     def size; @redis.zcard @q end
   end
-
 end
