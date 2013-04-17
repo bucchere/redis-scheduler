@@ -24,6 +24,7 @@ describe RedisScheduler do
   it "should allow unscheudling by user" do
     @scheduler.unschedule_all_for!(1).should == [{ @id1 => 'testing1' }, { @id2 => 'testing2' }]
     @scheduler.size.should == 2
+    @scheduler.scheduled_for(1).should == []
   end
 
   it "should return an array of job_id => payload hashes for a given user" do
