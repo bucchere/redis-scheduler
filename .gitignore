@@ -1,2 +1,5 @@
+.ruby-gemset
+.ruby-version
 pkg
 doc
+*.komodoproject
