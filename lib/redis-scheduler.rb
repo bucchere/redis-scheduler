@@ -123,11 +123,11 @@ class RedisScheduler
     return rval unless user_id
     #TODO consider using hmget instead of looping
     jobs_ids_for(user_id).each do |job_id|
-      rval << { job_id.to_s => @redis.hget(@jobs, job_id.to_s) }
+      rval << { job_id => @redis.hget(@jobs, job_id) }
       @redis.zrem(@queue, "#{job_id}:#{user_id}")
-      @redis.hdel(@jobs, job_id.to_s)
+      @redis.hdel(@jobs, job_id)
     end
-    @redis.hdel(@user_jobs, user_id.to_s)
+    @redis.hdel(@user_jobs, user_id)
     rval
   end
 
@@ -136,7 +136,7 @@ class RedisScheduler
     return rval unless user_id
     #TODO consider using hmget instead of looping
     jobs_ids_for(user_id).each do |job_id|
-      rval << { job_id.to_s => @redis.hget(@jobs, job_id.to_s) }
+      rval << { job_id => @redis.hget(@jobs, job_id) }
     end
     rval
   end
@@ -145,22 +145,21 @@ class RedisScheduler
   def unschedule!(user_id, job_ids)
     raise unless user_id and job_ids and job_ids.class == Array
     @redis.zrem(@queue, job_ids.map { |job_id| "#{job_id}:#{user_id}" })
-    job_ids.map! { |i| i.to_i }
     @redis.hdel(@jobs, job_ids)
-    jobs_raw = @redis.hget(@user_jobs, user_id.to_s)
+    jobs_raw = @redis.hget(@user_jobs, user_id)
     jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
     jobs -= job_ids
     if jobs.size == 0
-      @redis.hdel(@user_jobs, user_id.to_s)
+      @redis.hdel(@user_jobs, user_id)
     else
-      @redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
+      @redis.hset(@user_jobs, user_id, URI::encode(jobs.to_json))
     end
     jobs
   end
 
   def item(job_id)
     return nil unless job_id
-    { job_id => @redis.hget(@jobs, job_id.to_s) }
+    { job_id => @redis.hget(@jobs, job_id) }
   end
 
   private
@@ -190,7 +189,7 @@ class RedisScheduler
       descriptor = Marshal.dump [user_id ? "#{job_id}:#{user_id}" : job_id, Time.now.to_f, descriptor]
 
       if user_id
-	jobs_raw = @redis.hget(@user_jobs, user_id.to_s)
+	jobs_raw = @redis.hget(@user_jobs, user_id)
 	jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
 	jobs.each do |job|
 	  if job == job_id
@@ -199,17 +198,17 @@ class RedisScheduler
 	  end
 	end
 	if jobs.size == 0
-	  @redis.hdel(@user_jobs, user_id.to_s)
+	  @redis.hdel(@user_jobs, user_id)
 	else
-	  @redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
+	  @redis.hset(@user_jobs, user_id, URI::encode(jobs.to_json))
 	end
       end
-      payload = @redis.hget(@jobs, job_id.to_s)
+      payload = @redis.hget(@jobs, job_id)
 
       @redis.multi do # try and grab it
 	@redis.zrem @queue, ids_and_time[0]
 	@redis.sadd @processing_set, descriptor
-	@redis.hdel(@jobs, job_id.to_s)
+	@redis.hdel(@jobs, job_id)
       end and break [user_id ? "#{job_id}:#{user_id}" : job_id, Time.now.to_f, descriptor, payload]
       sleep CAS_DELAY # transaction failed. retry!
     end
@@ -221,18 +220,18 @@ class RedisScheduler
 
   def jobs_ids_for(user_id)
     return [] unless user_id
-    jobs = @redis.hget(@user_jobs, user_id.to_s)
+    jobs = @redis.hget(@user_jobs, user_id)
     jobs ? JSON::parse(URI::decode(jobs)) : []
   end
 
   def add_job_for(user_id, job_id, item)
     return unless job_id
-    @redis.hset(@jobs, job_id.to_s, item.to_s)
+    @redis.hset(@jobs, job_id, item)
     if user_id
-      jobs_raw = @redis.hget(@user_jobs, user_id.to_s)
+      jobs_raw = @redis.hget(@user_jobs, user_id)
       jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
       jobs << job_id
-      @redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
+      @redis.hset(@user_jobs, user_id, URI::encode(jobs.to_json))
     end
   end
 
@@ -262,7 +261,7 @@ class RedisScheduler
     def [] start, num=nil
       elements = @redis.zrange @q, start, start + (num || 0) - 1, :withscores => true
       v = elements.each_slice(2).map do |job_id, at|
-        [@redis.hget(@jobs, job_id.to_s), Time.at(at.to_f)]
+        [@redis.hget(@jobs, job_id), Time.at(at.to_f)]
       end
       num ? v : v.first
     end
