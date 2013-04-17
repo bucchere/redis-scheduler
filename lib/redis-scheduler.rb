@@ -143,8 +143,9 @@ class RedisScheduler
 
   #O(n) where n is the number of jobs for a given user
   def unschedule!(user_id, job_ids)
-    return [] unless user_id and job_ids
+    raise unless user_id and job_ids and job_ids.class == Array
     @redis.zrem(@queue, job_ids.map { |job_id| "#{job_id}:#{user_id}" })
+    job_ids.map! { |i| i.to_i }
     @redis.hdel(@jobs, job_ids)
     jobs_raw = @redis.hget(@user_jobs, user_id.to_s)
     jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
