@@ -50,8 +50,7 @@ class RedisScheduler
   def schedule!(item, time, user_id = nil)
     id = @redis.incr @counter
     @redis.zadd @queue, time.to_f, user_id ? "#{id}:#{user_id}" : "#{id}"
-    @redis.hset @jobs, id.to_s, item.to_s
-    add_job_for(user_id, id)
+    add_job_for(user_id, id, item)
     id
   end
 
@@ -82,17 +81,12 @@ class RedisScheduler
   ## when iterating through the processing set.
   def each descriptor=nil
     while(x = get(descriptor))
-      ids, at, processing_descriptor = x
+      ids, at, processing_descriptor, item = x
       job_id, user_id = ids.split(':')
-      item = @redis.hget @jobs, job_id.to_s
-      @redis.hdel @jobs, job_id.to_s
-      remove_job_for(user_id, job_id) if user_id
       begin
 	yield item, at
       rescue Exception # back in the hole!
-	schedule! item, at
-	@redis.hset @jobs, job_id.to_s, item.to_s
-	add_job_for(user_id, job_id) if user_id
+	schedule! item, at, user_id
 	raise
       ensure
 	cleanup! processing_descriptor
@@ -118,18 +112,20 @@ class RedisScheduler
   ## the item was removed from the schedule for processing.
   def processing_set_items
     @redis.smembers(@processing_set).map do |x|
-      job_id, timestamp, descriptor = Marshal.load(x)
-      [job_id, Time.at(timestamp), descriptor]
+      ids, timestamp, descriptor = Marshal.load(x)
+      [ids, Time.at(timestamp), descriptor]
     end
   end
 
   #unschedules all jobs for a given user
-  def unschedule_for!(user_id)
+  def unschedule_all_for!(user_id)
     rval = []
     return rval unless user_id
-    jobs_for(user_id).each do |job_id|
+    #TODO consider using hmget instead of looping
+    jobs_ids_for(user_id).each do |job_id|
       rval << { job_id.to_s => @redis.hget(@jobs, job_id.to_s) }
       @redis.zrem(@queue, "#{job_id}:#{user_id}")
+      @redis.hdel(@jobs, job_id.to_s)
     end
     @redis.hdel(@user_jobs, user_id.to_s)
     rval
@@ -138,27 +134,27 @@ class RedisScheduler
   def scheduled_for(user_id)
     rval = []
     return rval unless user_id
-    jobs_for(user_id).each do |job_id|
-      next unless job_id
+    #TODO consider using hmget instead of looping
+    jobs_ids_for(user_id).each do |job_id|
       rval << { job_id.to_s => @redis.hget(@jobs, job_id.to_s) }
     end
     rval
   end
 
-  def unschedule!(user_id, id)
-    remaining_job_ids = []
-    rval = {}
-    return rval unless user_id and id
-    jobs_for(user_id).each do |job_id|
-      if job_id == id
-	rval = { job_id.to_s => @redis.hget(@jobs, job_id) }
-	@redis.zrem(@queue, "#{job_id}:#{user_id}")
-	remove_job_for(user_id, job_id.to_s)
-	@redis.hdel(@jobs, job_id.to_s)
-	break
-      end
+  #O(n) where n is the number of jobs for a given user
+  def unschedule!(user_id, job_ids)
+    return [] unless user_id and job_ids
+    @redis.zrem(@queue, job_ids.map { |job_id| "#{job_id}:#{user_id}" })
+    @redis.hdel(@jobs, job_ids)
+    jobs_raw = @redis.hget(@user_jobs, user_id.to_s)
+    jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
+    jobs -= job_ids
+    if jobs.size == 0
+      @redis.hdel(@user_jobs, user_id.to_s)
+    else
+      @redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
     end
-    rval
+    jobs
   end
 
   def item(job_id)
@@ -190,22 +186,30 @@ class RedisScheduler
       break unless ids_and_time
       job_id, user_id = ids_and_time[0].split(':')
       runtime = ids_and_time[1]
-      descriptor = Marshal.dump [job_id, Time.now.to_f, descriptor]
+      descriptor = Marshal.dump [user_id ? "#{job_id}:#{user_id}" : job_id, Time.now.to_f, descriptor]
 
-      jobs_raw = @redis.hget(@user_jobs, user_id.to_s)
-      jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
-      jobs.each do |job|
-	if job == job_id
-	  jobs -= [job]
-	  break
+      if user_id
+	jobs_raw = @redis.hget(@user_jobs, user_id.to_s)
+	jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
+	jobs.each do |job|
+	  if job == job_id
+	    jobs -= [job]
+	    break
+	  end
+	end
+	if jobs.size == 0
+	  @redis.hdel(@user_jobs, user_id.to_s)
+	else
+	  @redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
 	end
       end
+      payload = @redis.hget(@jobs, job_id.to_s)
 
       @redis.multi do # try and grab it
 	@redis.zrem @queue, ids_and_time[0]
 	@redis.sadd @processing_set, descriptor
-	@redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
-      end and break [job_id, Time.at(runtime.to_f), descriptor]
+	@redis.hdel(@jobs, job_id.to_s)
+      end and break [user_id ? "#{job_id}:#{user_id}" : job_id, Time.now.to_f, descriptor, payload]
       sleep CAS_DELAY # transaction failed. retry!
     end
   end
@@ -214,34 +218,19 @@ class RedisScheduler
     @redis.srem @processing_set, item
   end
 
-  def jobs_for(user_id)
+  def jobs_ids_for(user_id)
     return [] unless user_id
     jobs = @redis.hget(@user_jobs, user_id.to_s)
     jobs ? JSON::parse(URI::decode(jobs)) : []
   end
 
-  def add_job_for(user_id, job_id)
-    return unless user_id and job_id
-    jobs_raw = @redis.hget(@user_jobs, user_id.to_s)
-    jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
-    jobs << job_id
-    @redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
-  end
-
-  #O(n) where n is the number of jobs for a given user
-  def remove_job_for(user_id, job_id)
-    return unless user_id and job_id
-    jobs_raw = @redis.hget(@user_jobs, user_id.to_s)
-    jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
-    jobs.each do |job|
-      if job.to_s == job_id.to_s
-	jobs -= [job]
-	break
-      end
-    end
-    if jobs.size == 0
-      @redis.hdel(@user_jobs, user_id.to_s)
-    else
+  def add_job_for(user_id, job_id, item)
+    return unless job_id
+    @redis.hset(@jobs, job_id.to_s, item.to_s)
+    if user_id
+      jobs_raw = @redis.hget(@user_jobs, user_id.to_s)
+      jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
+      jobs << job_id
       @redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
     end
   end
