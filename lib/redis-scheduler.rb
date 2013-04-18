@@ -184,20 +184,18 @@ class RedisScheduler
   def nonblocking_get descriptor
     loop do
       @redis.watch @queue
-      ids_and_time = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])[0]
-      break unless ids_and_time
-      job_id, user_id = ids_and_time.split(':')
-      descriptor = Marshal.dump [user_id ? "#{job_id}:#{user_id}" : job_id, Time.now.to_f, descriptor]
-
+      ids, runtime = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
+      break unless ids
+      job_id, user_id = ids.split(':')
+      descriptor = Marshal.dump [ids, Time.now.to_f, descriptor]
+      payload = @redis.hget(@jobs, job_id.to_s)
       if user_id
 	jobs_raw = @redis.hget(@user_jobs, user_id)
 	jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
 	jobs -= [job_id.to_i]
       end
-      payload = @redis.hget(@jobs, job_id.to_s)
-
       @redis.multi do # try and grab it
-	@redis.zrem @queue, "#{job_id}:#{user_id}"
+	@redis.zrem @queue, ids
 	@redis.sadd @processing_set, descriptor
 	@redis.hdel(@jobs, job_id.to_s)
 	if user_id
@@ -207,7 +205,7 @@ class RedisScheduler
 	    @redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
 	  end
 	end
-      end and break [user_id ? "#{job_id}:#{user_id}" : job_id, Time.now.to_f, descriptor, payload]
+      end and break [ids, Time.now.to_f, descriptor, payload]
       sleep CAS_DELAY # transaction failed. retry!
     end
   end
