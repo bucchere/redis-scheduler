@@ -186,8 +186,7 @@ class RedisScheduler
       @redis.watch @queue
       ids_and_time = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])[0]
       break unless ids_and_time
-      job_id, user_id = ids_and_time[0].split(':')
-      runtime = ids_and_time[1]
+      job_id, user_id = ids_and_time.split(':')
       descriptor = Marshal.dump [user_id ? "#{job_id}:#{user_id}" : job_id, Time.now.to_f, descriptor]
 
       if user_id
