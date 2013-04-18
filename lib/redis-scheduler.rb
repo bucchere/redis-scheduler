@@ -194,6 +194,11 @@ class RedisScheduler
 	jobs_raw = @redis.hget(@user_jobs, user_id)
 	jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
 	jobs -= [job_id]
+	if jobs.size == 0
+	  @redis.hdel(@user_jobs, user_id)
+	else
+	  @redis.hset(@user_jobs, user_id, URI::encode(jobs.to_json))
+	end
       end
       payload = @redis.hget(@jobs, job_id)
 
@@ -201,13 +206,6 @@ class RedisScheduler
 	@redis.zrem @queue, ids_and_time[0]
 	@redis.sadd @processing_set, descriptor
 	@redis.hdel(@jobs, job_id)
-	if user_id
-	  if jobs.size == 0
-	    @redis.hdel(@user_jobs, user_id)
-	  else
-	    @redis.hset(@user_jobs, user_id, URI::encode(jobs.to_json))
-	  end
-	end
       end and break [user_id ? "#{job_id}:#{user_id}" : job_id, Time.now.to_f, descriptor, payload]
       sleep CAS_DELAY # transaction failed. retry!
     end
