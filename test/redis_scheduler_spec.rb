@@ -1,6 +1,6 @@
 require 'redis'
 require 'json'
-require '/Users/chris/dijit/redis-scheduler/lib/redis-scheduler.rb'
+require './lib/redis-scheduler.rb'
 
 describe RedisScheduler do
   before do
