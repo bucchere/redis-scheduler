@@ -123,7 +123,7 @@ class RedisScheduler
     return rval unless user_id
     #TODO consider using hmget instead of looping
     jobs_ids_for(user_id).each do |job_id|
-      rval << { job_id => @redis.hget(@jobs, job_id) }
+      rval << { job_id => [@redis.hget(@jobs, job_id), Time.at(@redis.zscore(@queue, "#{job_id}:#{user_id}"))] }
       @redis.zrem(@queue, "#{job_id}:#{user_id}")
       @redis.hdel(@jobs, job_id)
     end
@@ -136,7 +136,7 @@ class RedisScheduler
     return rval unless user_id
     #TODO consider using hmget instead of looping
     jobs_ids_for(user_id).each do |job_id|
-      rval << { job_id => @redis.hget(@jobs, job_id) }
+      rval << { job_id => [@redis.hget(@jobs, job_id), Time.at(@redis.zscore(@queue, "#{job_id}:#{user_id}"))] }
     end
     rval
   end
