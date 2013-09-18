@@ -84,12 +84,12 @@ class RedisScheduler
       ids, at, processing_descriptor, item = x
       job_id, user_id = ids.split(':')
       begin
-	yield item, at, job_id
+      	yield item, at, job_id
       rescue Exception # back in the hole!
-	schedule! item, at, user_id, job_id
-	raise
+        schedule! item, at, user_id, job_id
+        raise
       ensure
-	cleanup! processing_descriptor
+        cleanup! processing_descriptor
       end
     end
   end
@@ -190,21 +190,21 @@ class RedisScheduler
       descriptor = Marshal.dump [ids, Time.now.to_f, descriptor]
       payload = @redis.hget(@jobs, job_id.to_s)
       if user_id
-	jobs_raw = @redis.hget(@user_jobs, user_id)
-	jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
-	jobs -= [job_id.to_i]
+        jobs_raw = @redis.hget(@user_jobs, user_id)
+        jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
+        jobs -= [job_id.to_i]
       end
       @redis.multi do # try and grab it
-	@redis.zrem @queue, ids
-	@redis.sadd @processing_set, descriptor
-	@redis.hdel(@jobs, job_id.to_s)
-	if user_id
-	  if jobs.size == 0
-	    @redis.hdel(@user_jobs, user_id.to_s)
-	  else
-	    @redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
-	  end
-	end
+      @redis.zrem @queue, ids
+      @redis.sadd @processing_set, descriptor
+      @redis.hdel(@jobs, job_id.to_s)
+      if user_id
+        if jobs.size == 0
+          @redis.hdel(@user_jobs, user_id.to_s)
+        else
+          @redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
+        end
+      end
       end and break [ids, Time.now.to_f, descriptor, payload]
       sleep CAS_DELAY # transaction failed. retry!
     end
