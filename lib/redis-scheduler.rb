@@ -47,8 +47,8 @@ class RedisScheduler
   end
 
   ## Schedule an item at a specific time. item will be converted to a string.
-  def schedule!(item, time, user_id = nil)
-    id = @redis.incr @counter
+  def schedule!(item, time, user_id = nil, job_id = nil)
+    id = job_id ? job_id : @redis.incr(@counter)
     @redis.zadd @queue, time.to_f, user_id ? "#{id}:#{user_id}" : "#{id}"
     add_job_for(user_id, id, item)
     id
@@ -84,9 +84,9 @@ class RedisScheduler
       ids, at, processing_descriptor, item = x
       job_id, user_id = ids.split(':')
       begin
-	yield item, at
+	yield item, at, job_id
       rescue Exception # back in the hole!
-	schedule! item, at, user_id
+	schedule! item, at, user_id, job_id
 	raise
       ensure
 	cleanup! processing_descriptor

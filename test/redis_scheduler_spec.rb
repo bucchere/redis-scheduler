@@ -38,7 +38,7 @@ describe RedisScheduler do
   end
 
   it "should iterate over items ready to be executed" do
-    @scheduler.each do |entry, time|
+    @scheduler.each do |entry, time, job_id|
       if entry != 'testing1' and entry != 'testing2'
         JSON::parse(URI::decode(entry))["testing"].should == 3
       end
