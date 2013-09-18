@@ -3,10 +3,10 @@ require 'rubygems/package_task'
 
 spec = Gem::Specification.new do |s|
  s.name = "redis-scheduler"
- s.version = "0.8.1"
+ s.version = "0.9.0"
  s.date = Time.now
  s.email = "wmorgan-redis-scheduler@masanjin.net"
- s.authors = ["William Morgan"]
+ s.authors = ["William Morgan", "Chris Bucchere"]
  s.summary  = "A basic chronological scheduler for Redis."
  s.description = "A basic chronological scheduler for Redis. Add work items to be processed at specific times in the future, and easily retrieve all items that are ready for processing."
  s.homepage = "http://gitub.com/wmorgan/redis-scheduler"
