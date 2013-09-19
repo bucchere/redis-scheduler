@@ -4,31 +4,32 @@ require './lib/redis-scheduler.rb'
 
 describe RedisScheduler do
   before do
+    @now = Time.now
     @redis = Redis.new(:host => 'localhost', :port => 6379)
     @redis.select(9)
     @scheduler = RedisScheduler.new(@redis, :namespace => 'testing')
     @scheduler.reset!
     @scheduler.should_not == nil
-    @id1 = @scheduler.schedule!("testing1", Time.now.to_i, 1)
-    @id2 = @scheduler.schedule!("testing2", Time.now.to_i, 1)
-    @id3 = @scheduler.schedule!(URI::encode({ "testing" => 3 }.to_json), Time.now.to_i, 2)
-    @id_future = @scheduler.schedule!("future", (Time.now + 100000).to_i, 3)
+    @id1 = @scheduler.schedule!("testing1", @now, 1)
+    @id2 = @scheduler.schedule!("testing2", @now, 1)
+    @id3 = @scheduler.schedule!(URI::encode({ "testing" => 3 }.to_json), @now, 2)
+    @id_future = @scheduler.schedule!("future", @now + 100000, 3)
     @scheduler.size.should == 4
   end
 
   it "should schedule an item" do
-    @id = @scheduler.schedule!("testing", Time.now.to_i)
+    @id = @scheduler.schedule!("testing", @now)
     @scheduler.item(@id).should == { @id => "testing" }
   end
 
   it "should allow unscheudling by user" do
-    @scheduler.unschedule_all_for!(1).should == [{ @id1 => 'testing1' }, { @id2 => 'testing2' }]
+    @scheduler.unschedule_all_for!(1).should == [{ @id1 => ['testing1', @now] }, { @id2 => ['testing2', @now] }]
     @scheduler.size.should == 2
     @scheduler.scheduled_for(1).should == []
   end
 
   it "should return an array of job_id => payload hashes for a given user" do
-    @scheduler.scheduled_for(1).should == [{ @id1 => 'testing1' }, { @id2  => 'testing2' }]
+    @scheduler.scheduled_for(1).should == [{ @id1 => ['testing1', @now] }, { @id2  => ['testing2', @now] }]
     @scheduler.size.should == 4
   end
 
