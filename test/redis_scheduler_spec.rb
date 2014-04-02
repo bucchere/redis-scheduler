@@ -66,7 +66,7 @@ describe RedisScheduler do
     end
   end
   
-  it 'should allow unscheduling by type' do
+  it 'should allow scheulding and unscheduling by type' do
     @id4 = @scheduler.schedule!('testing4', @now, 4, nil, 10)
     @id5 = @scheduler.schedule!('testing5', @now, 5, nil, 10)    
     @scheduler.size.should == 6
