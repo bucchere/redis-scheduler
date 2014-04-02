@@ -209,7 +209,7 @@ class RedisScheduler
   def nonblocking_get descriptor
     loop do
       @redis.watch @queue
-      ids, runtime = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
+      ids = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
       break unless ids
       job_id, user_id, type = ids[0].split(':')
       descriptor = Marshal.dump [ids, Time.now.to_f, descriptor]
