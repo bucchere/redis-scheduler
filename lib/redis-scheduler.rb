@@ -141,7 +141,7 @@ class RedisScheduler
     return rval unless user_id
     job_ids_for(user_id, type).each do |job_id|
       rval << { job_id => [ @redis.hget(@jobs, job_id),
-                            Time.at(@redis.zscore(@queue, type ? "#{job_id}:#{user_id}:#{type}" : "#{job_id}:#{user_id}"))]}
+                            Time.at(@redis.zscore(@queue, type ? "#{job_id}:#{user_id}:#{type}" : "#{job_id}:#{user_id}").to_f)]}
     end
     rval
   end
