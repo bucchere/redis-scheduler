@@ -1,6 +1,4 @@
 source 'https://rubygems.org'
-gem 'redis'
 
-#testing
+gem 'redis'
 gem 'rspec'
-gem 'timecop'
