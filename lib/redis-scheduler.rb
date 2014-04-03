@@ -81,15 +81,8 @@ class RedisScheduler
   ## when iterating through the processing set.
   def each descriptor=nil
     while(x = get(descriptor))
-      #ids, at, processing_descriptor, item = x
-      #job_id, user_id = ids.split(':')
-      ids = x[0][0]
-      at = x[1]
-      processing_descriptor = x[2]
-      item = x[3]
-      ids_split = ids.split(':')
-      job_id = ids_split[0]
-      user_id = ids_split[1]
+      ids, at, processing_descriptor, item = x
+      job_id, user_id = ids.split(':')
       begin
       	yield item, at, job_id
       rescue Exception # back in the hole!
@@ -191,14 +184,9 @@ class RedisScheduler
   def nonblocking_get descriptor
     loop do
       @redis.watch @queue
-      ids_runtime = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
-      ids = ids_runtime[0]
-      runtime = ids_runtime[1]
+      ids, runtime = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
       break unless ids
-      #job_id, user_id = ids.split(':')
-      ids_split = ids[0].split(':')
-      job_id = ids_split[0]
-      user_id = ids_split[1]
+      job_id, user_id = ids.split(':')
       descriptor = Marshal.dump [ids, Time.now.to_f, descriptor]
       payload = @redis.hget(@jobs, job_id.to_s)
       if user_id
