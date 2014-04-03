@@ -150,10 +150,8 @@ class RedisScheduler
 
   #O(n) where n is the number of jobs for a given user
   def unschedule!(user_id, job_ids)
-    rval = []
     raise unless user_id and job_ids and job_ids.class == Array
     job_ids.map do |job_id|
-      rval << { job_id => [@redis.hget(@jobs, job_id), Time.at(@redis.zscore(@queue, "#{job_id}:#{user_id}"))] }
       @redis.zrem(@queue, "#{job_id}:#{user_id}")
       @redis.hdel(@jobs, job_id)
     end
@@ -165,7 +163,7 @@ class RedisScheduler
     else
       @redis.hset(@user_jobs, user_id, URI::encode(jobs.to_json))
     end
-    rval
+    jobs
   end
 
   def item(job_id)
