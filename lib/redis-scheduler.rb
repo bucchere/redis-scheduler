@@ -44,24 +44,37 @@ class RedisScheduler
     @counter = [@namespace, "counter"].join
     @jobs = [@namespace, "jobs"].join #hash mapping job_id => payload
     @user_jobs = [@namespace, "user_jobs"].join #hash mapping user_id => job_id1,job_id2,job_id3....
+    @job_types = [@namespace, "job_types"].join #hash mapping type (e.g. email_id) => job_id1,job_id2,job_id3....
   end
 
   ## Schedule an item at a specific time. item will be converted to a string.
-  def schedule!(item, time, user_id = nil, job_id = nil)
+  def schedule!(item, time, user_id = nil, job_id = nil, type = nil)
     id = job_id ? job_id : @redis.incr(@counter)
-    @redis.zadd @queue, time.to_f, user_id ? "#{id}:#{user_id}" : "#{id}"
-    add_job_for(user_id, id, item)
+    payload = user_id ? "#{id}:#{user_id}" : "#{id}:-1"
+    payload = type ? "#{payload}:#{type}" : payload
+    @redis.zadd @queue, time.to_f, payload
+    add_job_for(user_id, id, item, type)
     id
   end
 
   ## Drop all data and reset the schedule entirely.
   def reset!
-    [@queue, @processing_set, @counter, @jobs, @user_jobs].each { |k| @redis.del k }
+    [@queue, @processing_set, @counter, @jobs, @user_jobs, @job_types].each { |k| @redis.del k }
   end
 
   ## Return the total number of items in the schedule.
   def size
     @redis.zcard @queue
+  end
+  
+  ## Return the number of jobs matching the given type in the schedule 
+  def size_by(type)
+    @redis.hlen(@job_types, type)
+  end
+
+  ## Return the number of users who currenly have jobs in the schedule 
+  def num_users
+    @redis.hlen(@user_jobs)
   end
 
   ## Returns the total number of items currently being processed.
@@ -82,14 +95,14 @@ class RedisScheduler
   def each descriptor=nil
     while(x = get(descriptor))
       ids, at, processing_descriptor, item = x
-      job_id, user_id = ids.split(':')
+      job_id, user_id, type = ids.split(':')
       begin
-	yield item, at, job_id
+	      yield item, at, job_id
       rescue Exception # back in the hole!
-	schedule! item, at, user_id, job_id
-	raise
+	      schedule! item, at, user_id, job_id, type
+	      raise
       ensure
-	cleanup! processing_descriptor
+	      cleanup! processing_descriptor
       end
     end
   end
@@ -118,45 +131,51 @@ class RedisScheduler
   end
 
   #unschedules all jobs for a given user
-  def unschedule_all_for!(user_id)
-    rval = []
-    return rval unless user_id
-    #TODO consider using hmget instead of looping
-    jobs_ids_for(user_id).each do |job_id|
-      rval << { job_id => @redis.hget(@jobs, job_id) }
-      @redis.zrem(@queue, "#{job_id}:#{user_id}")
-      @redis.hdel(@jobs, job_id)
-    end
-    @redis.hdel(@user_jobs, user_id)
-    rval
+  def unschedule_all_for!(user_id, type = nil)
+    unschedule!(user_id, job_ids_for(user_id, type), type)
   end
 
-  def scheduled_for(user_id)
+  def scheduled_for(user_id, type = nil)
     rval = []
     return rval unless user_id
-    #TODO consider using hmget instead of looping
-    jobs_ids_for(user_id).each do |job_id|
+    job_ids_for(user_id, type).each do |job_id|
       rval << { job_id => @redis.hget(@jobs, job_id) }
     end
     rval
   end
 
   #O(n) where n is the number of jobs for a given user
-  def unschedule!(user_id, job_ids)
-    raise unless user_id and job_ids and job_ids.class == Array
-    job_ids.map do |job_id|
-      @redis.zrem(@queue, "#{job_id}:#{user_id}")
-      @redis.hdel(@jobs, job_id)
+  def unschedule!(user_id, job_ids = [], type = nil)
+    raise "user_id is required" unless user_id
+    user_jobs = @redis.hget(@user_jobs, user_id)
+    user_jobs = user_jobs ? JSON::parse(URI::decode(user_jobs)) : []
+    user_jobs -= job_ids
+    job_types = nil
+    if type
+      job_types = @redis.hget(@job_types, type)
+      job_types = job_types ? JSON::parse(URI::decode(job_types)) : []
+      job_types -= job_ids
     end
-    jobs_raw = @redis.hget(@user_jobs, user_id)
-    jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
-    jobs -= job_ids
-    if jobs.size == 0
-      @redis.hdel(@user_jobs, user_id)
-    else
-      @redis.hset(@user_jobs, user_id, URI::encode(jobs.to_json))
+
+    @redis.multi do
+      job_ids.map do |job_id|
+        @redis.zrem(@queue, type ? "#{job_id}:#{user_id}:#{type}" : "#{job_id}:#{user_id}")
+        @redis.hdel(@jobs, job_id)
+      end
+      if user_jobs.size == 0
+        @redis.hdel(@user_jobs, user_id)
+      else
+        @redis.hset(@user_jobs, user_id, URI::encode(user_jobs.to_json))
+      end
+      if type && job_types
+        if job_types.size == 0
+          @redis.hdel(@job_types, type)
+        else
+          @redis.hset(@job_types, type, URI::encode(job_types.to_json))
+        end
+      end  
     end
-    jobs
+    job_ids
   end
 
   def item(job_id)
@@ -186,25 +205,37 @@ class RedisScheduler
       @redis.watch @queue
       ids, runtime = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
       break unless ids
-      job_id, user_id = ids.split(':')
+      job_id, user_id, type = ids.split(':')
       descriptor = Marshal.dump [ids, Time.now.to_f, descriptor]
       payload = @redis.hget(@jobs, job_id.to_s)
       if user_id
-	jobs_raw = @redis.hget(@user_jobs, user_id)
-	jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
-	jobs -= [job_id.to_i]
+        user_jobs = @redis.hget(@user_jobs, user_id)
+        user_jobs = user_jobs ? JSON::parse(URI::decode(user_jobs)) : []
+        user_jobs -= [job_id.to_i]
+      end
+      if type
+        job_types = @redis.hget(@job_types, type)
+        job_types = job_types ? JSON::parse(URI::decode(job_types)) : []
+        job_types -= [job_id.to_i]
       end
       @redis.multi do # try and grab it
-	@redis.zrem @queue, ids
-	@redis.sadd @processing_set, descriptor
-	@redis.hdel(@jobs, job_id.to_s)
-	if user_id
-	  if jobs.size == 0
-	    @redis.hdel(@user_jobs, user_id.to_s)
-	  else
-	    @redis.hset(@user_jobs, user_id.to_s, URI::encode(jobs.to_json))
-	  end
-	end
+        @redis.zrem @queue, ids
+        @redis.sadd @processing_set, descriptor
+        @redis.hdel(@jobs, job_id.to_s)
+        if user_id
+          if user_jobs.size == 0
+            @redis.hdel(@user_jobs, user_id.to_s)
+          else
+            @redis.hset(@user_jobs, user_id.to_s, URI::encode(user_jobs.to_json))
+          end
+        end
+        if type
+          if job_types.size == 0
+            @redis.hdel(@job_types, type.to_s)
+          else
+            @redis.hset(@job_types, type.to_s, URI::encode(job_types.to_json))
+          end        
+        end      
       end and break [ids, Time.now.to_f, descriptor, payload]
       sleep CAS_DELAY # transaction failed. retry!
     end
@@ -214,20 +245,46 @@ class RedisScheduler
     @redis.srem @processing_set, item
   end
 
-  def jobs_ids_for(user_id)
-    return [] unless user_id
-    jobs = @redis.hget(@user_jobs, user_id)
-    jobs ? JSON::parse(URI::decode(jobs)) : []
+  def job_ids_for(user_id, type = nil)
+    raise "user_id is required" unless user_id
+    raise "type is required if user_id == -1" if user_id == -1 && type.nil?
+
+    jobs_by_user, jobs_by_type = []
+    if type
+      jobs_by_type = @redis.hget(@job_types, type)
+      jobs_by_type = jobs_by_type ? JSON::parse(URI::decode(jobs_by_type)) : []
+    end
+    if user_id != -1
+      jobs_by_user = @redis.hget(@user_jobs, user_id)
+      jobs_by_user = jobs_by_user ? JSON::parse(URI::decode(jobs_by_user)) : []
+      if type
+        jobs_by_user & jobs_by_type
+      else
+        jobs_by_user
+      end
+    else
+      jobs_by_type
+    end
   end
 
-  def add_job_for(user_id, job_id, item)
+  def add_job_for(user_id, job_id, item, type = nil)
     return unless job_id
-    @redis.hset(@jobs, job_id, item)
+    user_jobs = []
     if user_id
-      jobs_raw = @redis.hget(@user_jobs, user_id)
-      jobs = jobs_raw ? JSON::parse(URI::decode(jobs_raw)) : []
-      jobs << job_id
-      @redis.hset(@user_jobs, user_id, URI::encode(jobs.to_json))
+      user_jobs = @redis.hget(@user_jobs, user_id)
+      user_jobs = user_jobs ? JSON::parse(URI::decode(user_jobs)) : []
+      user_jobs << job_id
+    end
+    job_types = []
+    if type
+      job_types = @redis.hget(@job_types, type)
+      job_types = job_types ? JSON::parse(URI::decode(job_types)) : []
+      job_types << job_id
+    end
+    @redis.multi do
+      @redis.hset(@jobs, job_id, item)
+      @redis.hset(@user_jobs, user_id, URI::encode(user_jobs.to_json)) if user_id
+      @redis.hset(@job_types, type, URI::encode(job_types.to_json)) if job_id      
     end
   end
 
