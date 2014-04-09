@@ -94,14 +94,10 @@ class RedisScheduler
   ## when iterating through the processing set.
   def each descriptor=nil
     while(x = get(descriptor))
-      ids = x[0][0]
-      at = x[1]
-      processing_descriptor = x[2]
-      item = x[3]
-      
+      ids, at, processing_descriptor, item = x      
       job_id, user_id, type = ids.split(':')
       begin
-      	yield item, at, user_id, job_id, type
+      	yield item, at, job_id, user_id, type
       rescue Exception # back in the hole!
         schedule! item, at, user_id, job_id, type
         raise
