@@ -94,8 +94,16 @@ class RedisScheduler
   ## when iterating through the processing set.
   def each descriptor=nil
     while(x = get(descriptor))
-      ids, at, processing_descriptor, item = x
-      job_id, user_id, type = ids.split(':')
+      #ids, at, processing_descriptor, item = x
+      #job_id, user_id, type = ids.split(':')
+      ids = x[0]
+      at = x[1]
+      processing_descriptor = x[2]
+      item = x[3]
+      ids_split = ids[0].split(':')
+      job_id = ids_split[0]
+      user_id = ids_split[1]
+      type = ids_split[2]
       begin
 	      yield item, at, job_id
       rescue Exception # back in the hole!
@@ -145,35 +153,135 @@ class RedisScheduler
   end
 
   #O(n) where n is the number of jobs for a given user
-  def unschedule!(user_id, job_ids = [], type = nil)
+  def unschedule!(user_id = nil, job_ids = -1, type = nil)
     raise "user_id is required" unless user_id
-    user_jobs = @redis.hget(@user_jobs, user_id)
-    user_jobs = user_jobs ? JSON::parse(URI::decode(user_jobs)) : []
-    user_jobs -= job_ids
-    job_types = nil
-    if type
+    raise "type is required if user_id == -1" if user_id == -1 && type.nil?
+    
+    job_types_to_delete = {} #will hold type => [job_id1:user_id1, job_id2:user_id2, ...]
+    user_jobs_to_delete = {} #create a hash that will hold user_id => [job_id1:type1, job_id2:type2, ...]
+    
+    @redis.watch @queue, @jobs, @user_jobs, @job_types
+
+    if user_id != -1 #delete all jobs in job_ids (of a type if specified); otherwise delete all the user's jobs of matching type
+      user_jobs = @redis.hget(@user_jobs, user_id)
+      user_jobs = user_jobs ? JSON::parse(URI::decode(user_jobs)) : []
+    
+      #iterate over all this user's jobs, removing those in job_ids (and, optionally, matching type)
+      user_jobs = user_jobs.map do |uj|
+        job_id = uj.to_s.index(':') ? uj.split(':')[0] : uj
+        begin
+          job_type = uj.split(':')[1]
+        rescue
+          job_type =  -1
+        end
+        if job_ids == -1 || (job_ids.is_a?(Array) && job_ids.include?(job_id))
+          if job_types_to_delete.include?(job_type)
+            if type
+              job_types_to_delete[job_type] << "#{job_id}:#{user_id}" if type == job_type
+            else
+              job_types_to_delete[job_type] << "#{job_id}:#{user_id}"
+            end
+          else
+            if type
+              job_types_to_delete[job_type] = ["#{job_id}:#{user_id}"] if type == job_type
+            else
+              job_types_to_delete[job_type] = ["#{job_id}:#{user_id}"]
+            end  
+          end
+          nil #signals that this item will need to me removed
+        else
+          "#{job_id}:#{job_type}" #this items stays
+        end
+      end
+      user_jobs = user_jobs.delete_if { |uj| uj.nil? }
+      
+      job_types_to_delete.each do |job_type, job_and_user_ids|
+        job_and_user_ids.each do |juid|
+          j_id = juid.split(':')[0]
+          u_id = juid.split(':')[1]
+          @redis.multi do                
+            @redis.zrem(@queue, job_type == -1 ? "#{j_id}:#{u_id}" : "#{j_id}:#{u_id}:#{job_type}")            
+            @redis.hdel(@jobs, j_id)            
+          end
+        end
+        job_types = @redis.hget(@job_types, job_type)
+        job_types = job_types ? JSON::parse(URI::decode(job_types)) : []
+        job_types -= job_and_user_ids
+        
+        @redis.multi do                
+          if job_types.size == 0
+            @redis.hdel(@job_types, job_type)
+          else
+            @redis.hset(@job_types, job_type, URI::encode(job_types.to_json))                      
+          end
+        end
+      end          
+      @redis.multi do                
+        if user_jobs.size == 0
+          @redis.hdel(@user_jobs, user_id)
+        else
+          @redis.hset(@user_jobs, user_id, URI::encode(user_jobs.to_json))
+        end
+      end
+    else #delete all jobs of a specified type, irrespective of user_id
       job_types = @redis.hget(@job_types, type)
       job_types = job_types ? JSON::parse(URI::decode(job_types)) : []
-      job_types -= job_ids
-    end
-
-    @redis.multi do
-      job_ids.map do |job_id|
-        @redis.zrem(@queue, type ? "#{job_id}:#{user_id}:#{type}" : "#{job_id}:#{user_id}")
-        @redis.hdel(@jobs, job_id)
+        
+      #iterate over all the jobs of this type, removing those in job_ids (and, optionally, matching user_id)
+      if job_ids == -1 || (job_ids.is_a?(Array) && job_ids.size > 0)
+        job_types = job_types.map do |jt|
+          job_id = jt.split(':')[0]
+          u_id = jt.split(':')[1]
+          if job_ids == -1 || (job_ids.is_a?(Array) && job_ids.include?(job_id))
+            if user_jobs_to_delete.include?(u_id)
+              if user_id != -1
+                user_jobs_to_delete[u_id] << "#{job_id}:#{type}" if u_id == user_id
+              else
+                user_jobs_to_delete[u_id] << "#{job_id}:#{type}"
+              end
+            else
+              if user_id != -1
+                user_jobs_to_delete[u_id] = ["#{job_id}:#{type}"] if u_id == user_id
+              else
+                user_jobs_to_delete[u_id] = ["#{job_id}:#{type}"]
+              end  
+            end
+            nil #signals that this item will need to me removed
+          else
+            "#{job_id}:#{u_id}" #this items stays
+          end
+        end
+        job_types = job_types.delete_if { |jt| jt.nil? }
       end
-      if user_jobs.size == 0
-        @redis.hdel(@user_jobs, user_id)
-      else
-        @redis.hset(@user_jobs, user_id, URI::encode(user_jobs.to_json))
+      
+      user_jobs_to_delete.each do |user_id, job_ids_and_types|
+        job_ids_and_types.each do |jiat|
+          j_id = jiat.split(':')[0]
+          t = jiat.split(':')[1]
+          @redis.multi do                
+            @redis.zrem(@queue, t && t != -1 ? "#{j_id}:#{user_id}:#{t}" : "#{j_id}:#{user_id}")            
+            @redis.hdel(@jobs, j_id)            
+          end
+        end
+        user_jobs = @redis.hget(@user_jobs, user_id)
+        user_jobs = user_jobs ? JSON::parse(URI::decode(user_jobs)) : []
+        user_jobs -= job_ids_and_types
+        
+        @redis.multi do                
+          if user_jobs.size == 0
+            @redis.hdel(@user_jobs, user_id)
+          else
+            @redis.hset(@user_jobs, user_id, URI::encode(user_jobs.to_json))                      
+          end
+        end
       end
-      if type && job_types
+      @redis.multi do                          
         if job_types.size == 0
           @redis.hdel(@job_types, type)
         else
           @redis.hset(@job_types, type, URI::encode(job_types.to_json))
         end
-      end  
+      end
     end
     job_ids
   end
@@ -202,21 +310,32 @@ class RedisScheduler
 
   def nonblocking_get descriptor
     loop do
-      @redis.watch @queue
-      ids, runtime = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
+      @redis.watch @queue, @jobs, @user_jobs, @job_types
+      #ids, runtime = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
+      ids_runtime = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
+      ids = ids_runtime.first
+      runtime = ids_runtime.last
       break unless ids
-      job_id, user_id, type = ids.split(':')
+      #job_id, user_id, type = ids.split(':')
+      job_id_user_id_type = ids[0].split(':')
+      job_id = job_id_user_id_type[0]
+      user_id = job_id_user_id_type[1]
+      type = job_id_user_id_type[2]
       descriptor = Marshal.dump [ids, Time.now.to_f, descriptor]
       payload = @redis.hget(@jobs, job_id.to_s)
       if user_id
         user_jobs = @redis.hget(@user_jobs, user_id)
         user_jobs = user_jobs ? JSON::parse(URI::decode(user_jobs)) : []
-        user_jobs -= [job_id.to_i]
+        if type
+          user_jobs -= ["#{job_id}:#{type}"]
+        else
+          user_jobs -= [job_id.to_i]
+        end
       end
       if type
         job_types = @redis.hget(@job_types, type)
         job_types = job_types ? JSON::parse(URI::decode(job_types)) : []
-        job_types -= [job_id.to_i]
+        job_types -= ["#{job_id}:#{user_id}"]
       end
       @redis.multi do # try and grab it
         @redis.zrem @queue, ids
@@ -253,10 +372,12 @@ class RedisScheduler
     if type
       jobs_by_type = @redis.hget(@job_types, type)
       jobs_by_type = jobs_by_type ? JSON::parse(URI::decode(jobs_by_type)) : []
+      jobs_by_type = jobs_by_type.map { |jbt| jbt.to_s.index(':') ? jbt.split(':')[0] : jbt }
     end
     if user_id != -1
       jobs_by_user = @redis.hget(@user_jobs, user_id)
-      jobs_by_user = jobs_by_user ? JSON::parse(URI::decode(jobs_by_user)) : []
+      jobs_by_user = jobs_by_user ? JSON::parse(URI::decode(jobs_by_user)) : []      
+      jobs_by_user = jobs_by_user.map { |jbu| jbu.to_s.index(':') ? jbu.split(':')[0] : jbu }
       if type
         jobs_by_user & jobs_by_type
       else
@@ -269,22 +390,23 @@ class RedisScheduler
 
   def add_job_for(user_id, job_id, item, type = nil)
     return unless job_id
+    @redis.watch @jobs, @user_jobs, @job_types
     user_jobs = []
     if user_id
       user_jobs = @redis.hget(@user_jobs, user_id)
       user_jobs = user_jobs ? JSON::parse(URI::decode(user_jobs)) : []
-      user_jobs << job_id
+      user_jobs << (type ? "#{job_id}:#{type}" : job_id)
     end
     job_types = []
     if type
       job_types = @redis.hget(@job_types, type)
       job_types = job_types ? JSON::parse(URI::decode(job_types)) : []
-      job_types << job_id
+      job_types << "#{job_id}:#{user_id}"
     end
     @redis.multi do
       @redis.hset(@jobs, job_id, item)
-      @redis.hset(@user_jobs, user_id, URI::encode(user_jobs.to_json)) if user_id
-      @redis.hset(@job_types, type, URI::encode(job_types.to_json)) if job_id      
+      @redis.hset(@user_jobs, user_id, URI::encode(user_jobs.to_json))
+      @redis.hset(@job_types, type, URI::encode(job_types.to_json)) if type
     end
   end
 
