@@ -323,39 +323,7 @@ class RedisScheduler
       type = job_id_user_id_type[2]
       descriptor = Marshal.dump [ids, Time.now.to_f, descriptor]
       payload = @redis.hget(@jobs, job_id.to_s)
-      if user_id
-        user_jobs = @redis.hget(@user_jobs, user_id)
-        user_jobs = user_jobs ? JSON::parse(URI::decode(user_jobs)) : []
-        if type
-          user_jobs -= ["#{job_id}:#{type}"]
-        else
-          user_jobs -= [job_id.to_i]
-        end
-      end
-      if type
-        job_types = @redis.hget(@job_types, type)
-        job_types = job_types ? JSON::parse(URI::decode(job_types)) : []
-        job_types -= ["#{job_id}:#{user_id}"]
-      end
-      @redis.multi do # try and grab it
-        @redis.zrem @queue, ids
-        @redis.sadd @processing_set, descriptor
-        @redis.hdel(@jobs, job_id.to_s)
-        if user_id
-          if user_jobs.size == 0
-            @redis.hdel(@user_jobs, user_id.to_s)
-          else
-            @redis.hset(@user_jobs, user_id.to_s, URI::encode(user_jobs.to_json))
-          end
-        end
-        if type
-          if job_types.size == 0
-            @redis.hdel(@job_types, type.to_s)
-          else
-            @redis.hset(@job_types, type.to_s, URI::encode(job_types.to_json))
-          end        
-        end      
-      end and break [ids, Time.now.to_f, descriptor, payload]
+      break [ids, Time.now.to_f, descriptor, payload]
       sleep CAS_DELAY # transaction failed. retry!
     end
   end
