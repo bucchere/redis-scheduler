@@ -323,6 +323,7 @@ class RedisScheduler
       type = job_id_user_id_type[2]
       descriptor = Marshal.dump [ids, Time.now.to_f, descriptor]
       payload = @redis.hget(@jobs, job_id.to_s)
+      unschedule!(user_id, [job_id], type)
       break [ids, Time.now.to_f, descriptor, payload]
       sleep CAS_DELAY # transaction failed. retry!
     end
