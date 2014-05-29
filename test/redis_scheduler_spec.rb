@@ -73,4 +73,42 @@ describe RedisScheduler do
     @scheduler.scheduled_for('adam') == @id3
     @scheduler.size.should == 1
   end
+  
+  it "should iterate over items schedule by time that are ready to be executed" do
+    @scheduler.reset!
+    @scheduler.size.should == 0
+    @id1 = @scheduler.schedule!("testing1", Time.now.to_i, 'adam', nil, 'red')
+    @id2 = @scheduler.schedule!("testing2", Time.now.to_i, 'bob', nil, 'red')  
+    @id3 = @scheduler.schedule!("testing3", Time.now + 1000, 'adam', nil, 'blue')
+    @scheduler.size.should == 3
+    @scheduler.each do |entry, time, job_id|
+      entry.should_not == 'testing3'
+    end
+    @scheduler.size.should == 1
+    end
+
+  it "schedule, unschedule, iterate, schedule and iterate" do
+    @scheduler.reset!
+    @scheduler.size.should == 0
+    @id1 = @scheduler.schedule!("testing1", Time.now.to_i, 'adam', nil, 'red')
+    @id2 = @scheduler.schedule!("testing2", Time.now.to_i, 'bob', nil, 'red')  
+    @id3 = @scheduler.schedule!("testing3", Time.now.to_i, 'adam', nil, 'blue')
+    @scheduler.size.should == 3
+    @scheduler.unschedule!('adam')
+    @scheduler.size.should == 1
+    @scheduler.unschedule!('bob')
+    @scheduler.size.should == 0    
+    @scheduler.each do |entry, time, job_id|
+      #no-op
+    end
+    @scheduler.size.should == 0
+    @id1 = @scheduler.schedule!("testing1", Time.now.to_i, 'adam', nil, 'red')
+    @id2 = @scheduler.schedule!("testing2", Time.now.to_i, 'bob', nil, 'red')  
+    @id3 = @scheduler.schedule!("testing3", Time.now.to_i, 'adam', nil, 'blue')
+    @scheduler.size.should == 3
+    @scheduler.each do |entry, time, job_id|
+      entry.should_not == nil
+    end
+    @scheduler.size.should == 0    
+  end
 end
