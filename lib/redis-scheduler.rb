@@ -52,8 +52,7 @@ class RedisScheduler
     id = job_id ? job_id : @redis.incr(@counter)
     payload = user_id ? "#{id}:#{user_id}" : "#{id}:-1"
     payload = type ? "#{payload}:#{type}" : payload
-    @redis.zadd @queue, time.to_f, payload
-    add_job_for(user_id, id, item, type)
+    add_job_for(user_id, id, item, time, payload, type)
     id
   end
 
@@ -376,9 +375,9 @@ class RedisScheduler
     end
   end
 
-  def add_job_for(user_id, job_id, item, type = nil)
+  def add_job_for(user_id, job_id, item, time, payload, type = nil)
     return unless job_id
-    @redis.watch @jobs, @user_jobs, @job_types
+    @redis.watch @queue, @jobs, @user_jobs, @job_types
     user_jobs = []
     if user_id
       user_jobs = @redis.hget(@user_jobs, user_id)
@@ -392,6 +391,7 @@ class RedisScheduler
       job_types << "#{job_id}:#{user_id}"
     end
     @redis.multi do
+      @redis.zadd(@queue, time.to_f, payload)
       @redis.hset(@jobs, job_id, item)
       @redis.hset(@user_jobs, user_id, URI::encode(user_jobs.to_json))
       @redis.hset(@job_types, type, URI::encode(job_types.to_json)) if type
