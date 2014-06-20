@@ -266,20 +266,16 @@ class RedisScheduler
         user_jobs = user_jobs ? JSON::parse(URI::decode(user_jobs)) : []
         user_jobs -= job_ids_and_types
         
-        @redis.multi do                
-          if user_jobs.size == 0
-            @redis.hdel(@user_jobs, user_id)
-          else
-            @redis.hset(@user_jobs, user_id, URI::encode(user_jobs.to_json))                      
-          end
+        if user_jobs.size == 0
+          @redis.hdel(@user_jobs, user_id)
+        else
+          @redis.hset(@user_jobs, user_id, URI::encode(user_jobs.to_json))                      
         end
       end
-      @redis.multi do                          
-        if job_types.size == 0
-          @redis.hdel(@job_types, type)
-        else
-          @redis.hset(@job_types, type, URI::encode(job_types.to_json))
-        end
+      if job_types.size == 0
+        @redis.hdel(@job_types, type)
+      else
+        @redis.hset(@job_types, type, URI::encode(job_types.to_json))
       end
     end
     job_ids
@@ -309,7 +305,7 @@ class RedisScheduler
 
   def nonblocking_get descriptor
     loop do
-      @redis.watch @queue, @jobs, @user_jobs, @job_types
+      @redis.watch @queue
       #ids, runtime = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
       ids_runtime = @redis.zrangebyscore(@queue, 0, Time.now.to_f, :withscores => true, :limit => [0, 1])
       ids = ids_runtime.first
@@ -377,7 +373,7 @@ class RedisScheduler
 
   def add_job_for(user_id, job_id, item, time, payload, type = nil)
     return unless job_id
-    @redis.watch @queue, @jobs, @user_jobs, @job_types
+    @redis.watch @queue
     user_jobs = []
     if user_id
       user_jobs = @redis.hget(@user_jobs, user_id)

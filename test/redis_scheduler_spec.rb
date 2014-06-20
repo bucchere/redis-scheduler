@@ -111,4 +111,15 @@ describe RedisScheduler do
     end
     @scheduler.size.should == 0    
   end
+  
+  it "should schedule and iterate" do
+    @scheduler.reset!
+    @id1 = @scheduler.schedule!("testing1", Time.now.to_i, 'adam', nil, 'red')
+    @scheduler.size.should == 1
+    @scheduler.each do |entry, time, job_id|
+      entry.should == 'testing1'
+    end
+    @scheduler.size.should == 0    
+  end
+  
 end
